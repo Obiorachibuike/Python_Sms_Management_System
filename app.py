@@ -1,66 +1,117 @@
+import os
+import subprocess
 from flask import Flask, jsonify, request
-from flask_jwt_extended import JWTManager, create_access_token
-from models import mongo_db, get_sms_metrics
-from sms_program_manager import start_program, stop_program, restart_program
-from utils import rate_limit
-from telegram_bot import send_telegram_alert
-from config import Config
+from flask_cors import CORS
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required
+from metrics import Metrics
+from telegram_bot import TelegramBot
+from auth import Auth
+from flask_sqlalchemy import SQLAlchemy
 
 app = Flask(__name__)
-app.config['JWT_SECRET_KEY'] = Config.JWT_SECRET_KEY
+CORS(app)  # Enables Cross-Origin Resource Sharing
 
-jwt = JWTManager(app)
+# Load configuration from environment variables
+app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'default_secret')  # Use environment variable
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///sms_management.db')  # SQLite by default
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False  # Disable track modifications to save memory
 
-# Authentication Route
+jwt = JWTManager(app)  # Initialize JWT Manager for authentication
+db = SQLAlchemy(app)  # Initialize SQLAlchemy for database interactions
+
+# Initialize metrics and Telegram bot
+metrics = Metrics()
+telegram_bot = TelegramBot(app.config['TELEGRAM_BOT_TOKEN'], app.config['CHAT_ID'])
+
+# Database model for CountryOperator
+class CountryOperator(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    country_operator = db.Column(db.String(50), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<CountryOperator {self.country_operator}>"
+
+# Create database tables before the first request
+@app.before_first_request
+def create_tables():
+    db.create_all()  # Creates database tables
+
+# Endpoint for user login
 @app.route('/login', methods=['POST'])
 def login():
-    username = request.json.get("username")
-    password = request.json.get("password")
+    data = request.json
+    username = data.get('username')
+    password = data.get('password')
 
-    if username == "admin" and password == "password":
-        access_token = create_access_token(identity=username)
+    if not username or not password:  # Validate input
+        return jsonify({"msg": "Username and password are required"}), 400
+
+    auth = Auth()  # Instantiate Auth class
+    if auth.authenticate(username, password):  # Authenticate user
+        access_token = create_access_token(identity=username)  # Create JWT token
         return jsonify(access_token=access_token), 200
-    else:
-        return jsonify({"msg": "Bad username or password"}), 401
+    return jsonify({"msg": "Bad username or password"}), 401  # Return error if authentication fails
 
-# Route to control programs
-@app.route('/program/<string:action>', methods=['POST'])
-def control_program(action):
-    session_name = request.json.get('session_name')
-
-    if action == "start":
-        start_program(session_name)
-        return jsonify({"msg": "Program started"}), 200
-    elif action == "stop":
-        stop_program(session_name)
-        return jsonify({"msg": "Program stopped"}), 200
-    elif action == "restart":
-        restart_program(session_name)
-        return jsonify({"msg": "Program restarted"}), 200
-    else:
-        return jsonify({"msg": "Invalid action"}), 400
-
-# Route to get SMS metrics
-@app.route('/metrics', methods=['GET'])
-def get_metrics():
-    metrics = get_sms_metrics()
-    return jsonify(metrics), 200
-
-# Route for rate limiting
-@app.route('/send_sms', methods=['POST'])
+# Endpoint to send SMS
+@app.route('/sms/send', methods=['POST'])
+@jwt_required()  # Protect this endpoint with JWT
 def send_sms():
-    country = request.json.get('country')
-    if rate_limit(country):
-        return jsonify({"msg": "SMS sent successfully"}), 200
-    else:
-        return jsonify({"msg": "Rate limit exceeded"}), 429
+    data = request.json
+    country_operator = data.get('country_operator')
+    phone_number = data.get('phone_number')
+    proxy = data.get('proxy')
 
-# Route to send an alert
-@app.route('/alert', methods=['POST'])
-def alert():
-    message = request.json.get('message')
-    send_telegram_alert(message)
-    return jsonify({"msg": "Alert sent"}), 200
+    session_name = f"program1_{country_operator}"  # Create a session name for the SMS sending program
+    # Start a new screen session for sending SMS
+    subprocess.Popen(['screen', '-dmS', session_name, 'python', 'sms_program.py', phone_number, proxy])
+
+    return jsonify({"msg": "SMS sending started"}), 200  # Return success message
+
+# Endpoint to retrieve real-time metrics
+@app.route('/metrics', methods=['GET'])
+@jwt_required()  # Protect this endpoint with JWT
+def get_metrics():
+    return jsonify(metrics.get_metrics()), 200  # Return metrics data
+
+# Endpoint to add country-operator pair
+@app.route('/country-operator', methods=['POST'])
+@jwt_required()  # Protect this endpoint with JWT
+def add_country_operator():
+    data = request.json
+    country_operator = data.get('country_operator')
+
+    if not country_operator:  # Validate input
+        return jsonify({"msg": "Country operator is required"}), 400
+
+    new_operator = CountryOperator(country_operator=country_operator)
+
+    try:
+        db.session.add(new_operator)  # Add new operator to the session
+        db.session.commit()  # Commit the session to save changes
+        return jsonify({"msg": "Country-operator added"}), 201  # Return success message
+    except Exception as e:
+        db.session.rollback()  # Rollback if there’s an error
+        return jsonify({"msg": str(e)}), 400  # Return error message
+
+# Endpoint to delete a country-operator pair
+@app.route('/country-operator/<country_operator>', methods=['DELETE'])
+@jwt_required()  # Protect this endpoint with JWT
+def delete_country_operator(country_operator):
+    operator = CountryOperator.query.filter_by(country_operator=country_operator).first()
+    if operator:
+        db.session.delete(operator)  # Delete the operator
+        db.session.commit()  # Commit the session to save changes
+        return jsonify({"msg": "Country-operator deleted"}), 200  # Return success message
+    return jsonify({"msg": "Country-operator not found"}), 404  # Return not found message
+
+# Custom error handlers
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({"msg": "Resource not found"}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({"msg": "Internal server error"}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000)  # Run the Flask app

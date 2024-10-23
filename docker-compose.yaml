@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  app:
+    build: .  # Build the Docker image from the current directory
+    ports:
+      - "5000:5000"  # Map port 5000 of the container to port 5000 on the host
+    environment:
+      DATABASE_URL: sqlite:///sms_management.db  # Database connection string
+      JWT_SECRET_KEY: your_jwt_secret_key  # JWT secret key
+      TELEGRAM_BOT_TOKEN: your_telegram_bot_token  # Telegram bot token
+      CHAT_ID: your_chat_id  # Telegram chat ID
+    volumes:
+      - .:/app  # Mount the current directory to /app in the container
+    depends_on:
+      - db  # Ensure the database service starts before the app
+
+  db:
+    image: nouchka/sqlite3:latest  # Use a lightweight SQLite database image
+    volumes:
+      - sms_management_data:/data  # Persist database data
+    restart: always  # Restart the database service if it fails
+
+volumes:
+  sms_management_data:  # Define a named volume for persistent storage
