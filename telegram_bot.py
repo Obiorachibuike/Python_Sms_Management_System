@@ -1,20 +1,29 @@
 import requests
+import logging
 
 class TelegramBot:
-    def __init__(self, token, chat_id):
-        self.token = token
+    def __init__(self, bot_token, chat_id):
+        self.bot_token = bot_token
         self.chat_id = chat_id
 
     def send_message(self, message):
-        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-        payload = {
-            "chat_id": self.chat_id,
-            "text": message,
-            "parse_mode": "HTML"  # Optional: format the message as HTML
-        }
-
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        data = {"chat_id": self.chat_id, "text": message}
+        
         try:
-            response = requests.post(url, json=payload)  # Send POST request to Telegram API
-            response.raise_for_status()  # Raise an error for bad responses
-        except requests.exceptions.RequestException as e:
-            print(f"Error sending message: {e}")  # Handle any exceptions that occur during the request
+            response = requests.post(url, data=data)
+            response.raise_for_status()  # Raises an error for bad responses (4xx/5xx)
+            
+            logging.info(f"Message sent successfully to chat_id {self.chat_id}: {message}")
+            return response.json()  # Return response data if needed for further handling
+            
+        except requests.exceptions.HTTPError as http_err:
+            logging.error(f"HTTP error occurred while sending message: {http_err} - Response: {response.text}")
+        except requests.exceptions.ConnectionError as conn_err:
+            logging.error(f"Connection error occurred: {conn_err}")
+        except requests.exceptions.Timeout as timeout_err:
+            logging.error(f"Timeout error occurred: {timeout_err}")
+        except requests.exceptions.RequestException as req_err:
+            logging.error(f"An error occurred: {req_err}")
+
+        return None  # Return None if an error occurred
