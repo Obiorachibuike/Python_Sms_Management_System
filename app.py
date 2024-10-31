@@ -1,5 +1,5 @@
 import os
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 from flask_sqlalchemy import SQLAlchemy
@@ -17,7 +17,7 @@ app = Flask(__name__)
 app.config.from_object(Config)  # Load configuration from Config class
 
 # Enable CORS for the specified origin (adjust as needed)
-CORS(app, resources={r"/*": {"origins": "http://localhost:5173"}})
+CORS(app, resources={r"/*": {"origins": "http://localhost:5175"}})
 
 # Initialize SQLAlchemy
 db = SQLAlchemy(app)  # SQLAlchemy for database interactions
@@ -28,7 +28,7 @@ with app.app_context():
 
 # Initialize JWT and SocketIO
 jwt = JWTManager(app)  # JWT for authentication
-socketio = SocketIO(app, cors_allowed_origins="http://localhost:5173")  # Allow CORS for Socket.IO
+socketio = SocketIO(app, cors_allowed_origins="http://localhost:5175")  # Allow CORS for Socket.IO
 
 # Initialize metrics and Telegram bot
 metrics = Metrics()  # Start Prometheus metrics server
@@ -49,8 +49,7 @@ def handle_disconnect():
 # Create database tables before the first request
 @app.before_request
 def create_tables():
-    with app.app_context():  # Ensure the app context is active
-        db.create_all()  # Creates all database tables
+    db.create_all()  # Creates all database tables
 
 # GraphQL route
 app.add_url_rule(

@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify, url_for
-from flask_jwt_extended import jwt_required, create_access_token
+from flask_jwt_extended import jwt_required
 from flask_mail import Mail, Message
-from models import SMSSent, db, get_mongo_db,User
+from models import SMSSent, db, get_mongo_db, User
 from services import ProcessManager
 from metrics import Metrics
 from auth import Auth
@@ -23,28 +23,22 @@ routes = Blueprint('routes', __name__)
 process_manager = ProcessManager()
 metrics = Metrics()
 
-
-# Generate a 32-byte (256-bit) secret key and convert it to hexadecimal format
-# secret_key = os.urandom(32).hex()
-# print(secret_key)
-
 # Ensure that SECRET_KEY is obtained from the environment variable
 secret_key = os.getenv('SECRET_KEY')
 if not secret_key:
     raise ValueError("SECRET_KEY environment variable is not set. Please set it.")
 
-# Initialize the serializer with the environment variable SECRET_KEY
+# Initialize the serializer for generating and verifying tokens
+serializer = URLSafeTimedSerializer(secret_key)
 
-
+# Initialize Telegram bot and mail services
 telegram_bot = TelegramBot(os.getenv('TELEGRAM_BOT_TOKEN'), os.getenv('CHAT_ID'))
 mail = Mail()  # Initialize Flask-Mail
-# serializer = URLSafeTimedSerializer(os.getenv('SECRET_KEY'), secret_key)  # For email verification
-serializer = URLSafeTimedSerializer(secret_key)
 
 # Initialize Rate Limiter
 limiter = Limiter(key_func=get_remote_address)
 
-# Centralized response utility
+# Centralized response utility for consistent API responses
 def response(success=True, message="", data=None, status=200):
     return jsonify({
         "success": success,
@@ -52,7 +46,7 @@ def response(success=True, message="", data=None, status=200):
         "data": data
     }), status
 
-# Password complexity check
+# Password complexity check function
 def is_valid_password(password):
     """Check if the password meets complexity requirements."""
     if len(password) < 8:  # Minimum length
@@ -67,10 +61,10 @@ def is_valid_password(password):
         return False
     return True
 
-# Initialize Auth
+# Initialize Auth service
 auth_service = Auth()
 
-# Signup route
+# Signup route for user registration
 @routes.route('/signup', methods=['POST'])
 def signup():
     data = request.json
@@ -104,7 +98,7 @@ def signup():
 
     return response(success=True, message="User created successfully. Please verify your email.", status=201)
 
-# Email verification
+# Email verification logic
 def send_verification_email(user_email, token):
     """Send verification email."""
     msg = Message('Email Verification', sender='noreply@example.com', recipients=[user_email])
@@ -137,21 +131,28 @@ def verify_email(token):
 
     return response(success=False, message="User not found", status=404)
 
-# Login route
 @routes.route('/login', methods=['POST'])
 def login():
+    # Ensure to log the raw request data for debugging
     data = request.json
+    print("Request data:", data)  # Debugging line to see the raw data
+    
     email = data.get('email')
     password = data.get('password')
+    
+    print("Email:", email, "Password:", password)  # Debugging line
 
+    # Check for missing fields
     if not email or not password:
         return response(success=False, message="Email and password are required", status=400)
 
-    user = auth_service.authenticate(email, password)  # Use the Auth class
+    # Authenticate user
+    user = auth_service.authenticate(email, password)
+    
     if user:
         access_token = auth_service.create_access_token(user)  # Create access token
         return response(success=True, data={"access_token": access_token}, status=200)
-    
+
     return response(success=False, message="Bad email or password", status=401)
 
 # CRUD for CountryOperator (in MongoDB)
@@ -199,6 +200,23 @@ def restart_program():
     session_name = f"program_{data['country_operator']}"
     return process_manager.restart_program(session_name, data['phone_number'], data['proxy'])
 
+# Get Program Status
+@routes.route('/program/status', methods=['GET'])
+@jwt_required()
+def get_program_status():
+    """Get the status of a program session."""
+    session_name = request.args.get('session_name')
+
+    if not session_name:
+        return response(success=False, message="session_name parameter is required", status=400)
+
+    status = process_manager.get_program_status(session_name)
+
+    if status is not None:
+        return response(success=True, data=status, status=200)
+    
+    return response(success=False, message="Session not found", status=404)
+
 # Real-time Metrics with Pagination
 @routes.route('/metrics', methods=['GET'])
 @jwt_required()
@@ -210,7 +228,12 @@ def get_metrics():
     
     return response(
         success=True, 
-        data={"sms_sent": [sms.to_dict() for sms in sms_sent.items]}, 
+        data={
+            "sms_sent": [sms.to_dict() for sms in sms_sent.items],
+            "total": sms_sent.total,  # Include the total count of items
+            "page": page,  # Current page number
+            "per_page": per_page  # Items per page
+        }, 
         status=200
     )
 
@@ -236,15 +259,5 @@ def send_alert_route():
         return response(success=True, message="Alert sent successfully", status=200)
     
     except Exception as e:
-        logging.error(f"An error occurred while sending the alert: {str(e)}")
-        return response(success=False, message="An error occurred while sending the alert", status=500)
-
-
-
-# Rate Limiting for SMS Sending
-@routes.route('/send_sms', methods=['POST'])
-@limiter.limit("10/minute")
-@jwt_required()
-def send_sms():
-    # SMS sending logic
-    return response(success=True, message="SMS sent successfully", status=200)
+        logging.error(f"Error sending alert: {str(e)}")
+        return response(success=False, message=str(e), status=500)

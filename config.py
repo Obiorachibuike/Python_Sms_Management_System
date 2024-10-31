@@ -4,7 +4,7 @@ class Config:
     JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY', 'your_jwt_secret')  # Default JWT secret
     SQLALCHEMY_DATABASE_URI = os.getenv(
         'DATABASE_URL', 
-        'mysql+pymysql://user:password@localhost/sms_management'
+        'mysql+pymysql://root:@localhost/sms_management'
     )  # Default MySQL URI
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     MONGO_URI = os.getenv(
